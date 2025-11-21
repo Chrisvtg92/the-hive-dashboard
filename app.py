@@ -38,6 +38,25 @@ page = st.sidebar.radio(
 )
 
 # --------------------------------------------------------------
+# EXTRACT DATE FROM FIRST ROW
+# --------------------------------------------------------------
+def extract_date(df):
+    """Détecte automatiquement une date dans la première ligne (ex : C1)."""
+    first_row = df.iloc[0].astype(str)
+    detected_date = None
+
+    for value in first_row:
+        try:
+            parsed = pd.to_datetime(value, dayfirst=True, errors="ignore")
+            if isinstance(parsed, pd.Timestamp):
+                detected_date = parsed
+                break
+        except:
+            pass
+
+    return detected_date
+
+# --------------------------------------------------------------
 # DASHBOARD PAGE
 # --------------------------------------------------------------
 if page == "Dashboard":
@@ -47,34 +66,55 @@ if page == "Dashboard":
         st.warning("Veuillez importer le fichier cumulatif pour commencer.")
         st.stop()
 
-    df["Date"] = pd.to_datetime(df["Date"])
+    # --- Extraire la date du fichier ---
+    detected_date = extract_date(df)
 
-    # Dernière ligne = jour courant
-    today_data = df.iloc[-1]
+    if detected_date is None:
+        st.error("Impossible de détecter la date du rapport (ex : cellule C1).")
+        st.stop()
+
+    # Ajouter la colonne Date à tout le dataset
+    df["Date"] = detected_date
+
+    # --- Nettoyage du tableau : retirer les lignes du haut si besoin ---
+    df_clean = df.copy()
+    df_clean = df_clean.dropna(how="all")  # supprime lignes vides
+
+    # Vérifier que les colonnes essentielles existent
+    required_columns = ["CA_total", "Couverts", "Ticket_moyen"]
+    for col in required_columns:
+        if col not in df_clean.columns:
+            st.error(f"Colonne manquante dans le fichier : {col}")
+            st.stop()
 
     # ---------------- KPIs ----------------
+    today_data = df_clean.iloc[-1]
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("CA Total", f"{today_data['CA_total']:.2f} €")
     col2.metric("Couverts", int(today_data["Couverts"]))
     col3.metric("Ticket Moyen", f"{today_data['Ticket_moyen']:.2f} €")
 
-    if len(df) >= 2:
-        col4.metric("Variation J-1", f"{today_data['CA_total'] - df.iloc[-2]['CA_total']:.2f} €")
+    if len(df_clean) >= 2:
+        col4.metric("Variation J-1", f"{today_data['CA_total'] - df_clean.iloc[-2]['CA_total']:.2f} €")
     else:
         col4.metric("Variation J-1", "N/A")
 
-    # ---------------- Historique ----------------
+    # ---------------- Graphique CA ----------------
     st.subheader("📈 Historique journalier du CA")
-    fig = px.line(df, x="Date", y="CA_total", markers=True)
+    fig = px.line(df_clean, x="Date", y="CA_total", markers=True)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.dataframe(df)
+    st.dataframe(df_clean)
 
     # ---------------- Budget & N-1 ----------------
     if df_prev is not None and df_budget is not None:
         st.subheader("📊 Comparaison Budget & N-1")
 
-        merged = df.merge(df_prev, on="Date", suffixes=("", "_N1"))
+        df_prev["Date"] = detected_date
+        df_budget["Date"] = detected_date
+
+        merged = df_clean.merge(df_prev, on="Date", suffixes=("", "_N1"))
         merged = merged.merge(df_budget, on="Date")
 
         merged["Var vs N-1"] = merged["CA_total"] - merged["CA_total_N1"]
@@ -92,7 +132,9 @@ if page == "Analyse Mensuelle":
         st.warning("Importez un fichier cumulatif.")
         st.stop()
 
-    df["Date"] = pd.to_datetime(df["Date"])
+    detected_date = extract_date(df)
+    df["Date"] = detected_date
+
     df["Mois"] = df["Date"].dt.to_period("M").astype(str)
 
     monthly = df.groupby("Mois").agg({
@@ -123,126 +165,3 @@ if page == "Analyse Annuelle":
 
     if df is None:
         st.warning("Importez un fichier cumulatif.")
-        st.stop()
-
-    df["Année"] = pd.to_datetime(df["Date"]).dt.year
-
-    annual = df.groupby("Année").agg({
-        "CA_total": "sum",
-        "Couverts": "sum"
-    }).reset_index()
-
-    annual["Ticket_moyen"] = annual["CA_total"] / annual["Couverts"]
-
-    st.subheader("CA annuel")
-    fig = px.bar(annual, x="Année", y="CA_total")
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Tableau annuel")
-    st.dataframe(annual)
-
-# --------------------------------------------------------------
-# PRODUCTIVITÉ
-# --------------------------------------------------------------
-if page == "Productivité":
-    st.title("⚙️ Productivité par service")
-
-    if df is None:
-        st.warning("Importez un fichier cumulatif.")
-        st.stop()
-
-    st.subheader("Paramètres personnels (à saisir manuellement)")
-    colA, colB, colC = st.columns(3)
-
-    personnel_matin = colA.number_input("Personnel Matin", min_value=0, value=2)
-    personnel_midi = colB.number_input("Personnel Midi", min_value=0, value=3)
-    personnel_soir = colC.number_input("Personnel Soir", min_value=0, value=3)
-
-    taux_horaire = st.number_input("Taux horaire (€)", min_value=0.0, value=15.0)
-
-    df_prod = df.copy()
-
-    # Coûts
-    df_prod["Coût Matin"] = personnel_matin * taux_horaire
-    df_prod["Coût Midi"] = personnel_midi * taux_horaire
-    df_prod["Coût Soir"] = personnel_soir * taux_horaire
-
-    # Productivités
-    df_prod["Prod Matin"] = df_prod.get("Matin", 0) / df_prod["Coût Matin"]
-    df_prod["Prod Midi"] = df_prod.get("Midi", 0) / df_prod["Coût Midi"]
-    df_prod["Prod Soir"] = df_prod.get("Soir", 0) / df_prod["Coût Soir"]
-
-    # Ratio global
-    df_prod["Ratio Total"] = (
-        df_prod.get("Matin", 0) +
-        df_prod.get("Midi", 0) +
-        df_prod.get("Soir", 0)
-    ) / (
-        df_prod["Coût Matin"] +
-        df_prod["Coût Midi"] +
-        df_prod["Coût Soir"]
-    )
-
-    # Seuil d'alerte
-    seuil = st.number_input("Seuil alerte productivité", min_value=0.0, value=1.5)
-    last_ratio = df_prod.iloc[-1]["Ratio Total"]
-
-    if last_ratio < seuil:
-        st.error(f"⚠️ Productivité faible aujourd'hui : {last_ratio:.2f} (seuil : {seuil})")
-    else:
-        st.success(f"✅ Productivité correcte : {last_ratio:.2f}")
-
-    # Graphique
-    st.subheader("📉 Graphique productivité par service")
-    figP = px.line(
-        df_prod,
-        x="Date",
-        y=["Prod Matin", "Prod Midi", "Prod Soir"],
-        markers=True,
-        title="Productivité (CA / Coût du personnel)"
-    )
-    st.plotly_chart(figP, use_container_width=True)
-
-    st.subheader("📋 Tableau complet productivité")
-    df_export = df_prod[[
-        "Date", "Matin", "Midi", "Soir",
-        "Coût Matin", "Coût Midi", "Coût Soir",
-        "Prod Matin", "Prod Midi", "Prod Soir",
-        "Ratio Total"
-    ]]
-    st.dataframe(df_export)
-
-    # Export Excel
-    st.subheader("📤 Export Productivité")
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df_export.to_excel(writer, index=False)
-
-    st.download_button(
-        "Télécharger Productivité.xlsx",
-        data=buffer.getvalue(),
-        file_name="productivite.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-# --------------------------------------------------------------
-# EXPORT PAGE
-# --------------------------------------------------------------
-if page == "Export":
-    st.title("📤 Export des données")
-
-    if df is None:
-        st.warning("Importez un fichier cumulatif.")
-        st.stop()
-
-    if st.button("Télécharger le fichier Excel consolidé"):
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False)
-
-        st.download_button(
-            "Télécharger Excel",
-            data=buffer.getvalue(),
-            file_name="dashboard_export.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
