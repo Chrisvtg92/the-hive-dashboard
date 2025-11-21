@@ -1,94 +1,110 @@
 import pandas as pd
+import re
 
-# ---------------------------------------
-#  FUNCTIONS USED BY DAILY + N-1 PARSER
-# ---------------------------------------
+# ---------------------------
+# Utilitaires
+# ---------------------------
 
 def clean_amount(value):
-    """Convertit un montant Excel (ex : '1.234,56 €') en float Python."""
-    if value is None:
+    """Nettoie un montant TTC ou HT (€, virgules, espaces...)."""
+    if pd.isna(value):
         return 0.0
-    value = str(value).replace("€", "").replace(" ", "").replace(".", "").replace(",", ".")
+    value = str(value)
+    value = value.replace("€", "").replace(" ", "").replace(",", ".")
     try:
         return float(value)
     except:
         return 0.0
 
-def detect_category(text):
-    """Détecte si une ligne appartient à Nourriture / Boissons."""
-    if not isinstance(text, str):
-        return None
-    t = text.lower()
-    if "nourriture" in t or "resta" in t or "food" in t:
-        return "food"
-    if "boisson" in t or "bar" in t or "drink" in t:
-        return "bar"
-    return None
 
-# ---------------------------------------
-#  PARSER DAILY REPORT
-# ---------------------------------------
+def detect_category(text):
+    """Retourne 'nourriture' ou 'boissons' selon la nature du poste."""
+    text = text.lower()
+
+    food_keywords = ["food", "nourriture", "resto", "restaurant", "plat", "meal"]
+    drink_keywords = ["boisson", "drink", "bar", "beverage"]
+
+    if any(k in text for k in food_keywords):
+        return "nourriture"
+    if any(k in text for k in drink_keywords):
+        return "boissons"
+
+    # fallback : nourriture
+    return "nourriture"
+
+
+def detect_service(row_label):
+    """Analyse du centre de revenu → matin / midi / soir."""
+    label = row_label.lower()
+
+    if "04:00" in label and "11:00" in label:
+        return "matin"
+    if "11:00" in label and "17:00" in label:
+        return "midi"
+    if "17:00" in label and "04:00" in label:
+        return "soir"
+
+    # fallback : midi
+    return "midi"
+
+
+# ---------------------------
+# PARSER PRINCIPAL
+# ---------------------------
 
 def parse_daily_report(file):
-    df = pd.read_excel(file, header=None)
+    """
+    Parse un fichier Cumulatif_YYYYMMDD.xlsx venant de RestoTrack.
+    Retourne :
+        - dataframe propre par service
+        - totaux midi/soir/nourriture/boissons
+    """
 
-    # ---------- 1. Extraction date ----------
-    report_date = None
-    for col in df.columns:
-        for row in df[col].dropna().astype(str):
-            if "/" in row:
-                try:
-                    report_date = pd.to_datetime(row, dayfirst=True)
-                    break
-                except:
-                    pass
-        if report_date is not None:
-            break
-    if report_date is None:
-        raise ValueError("Impossible de détecter la date du rapport.")
+    df = pd.read_excel(file)
 
-    # ---------- 2. Trouver bloc Total ----------
-    idx_total = df[df.astype(str).apply(lambda r: r.str.contains("Total", na=False)).any(axis=1)].index
-    if len(idx_total) == 0:
-        raise ValueError("Ligne 'Total' introuvable")
-    row_total = idx_total[0]
+    # Nettoyage des noms de colonnes
+    df.columns = [str(c).strip() for c in df.columns]
 
-    # ---------- 3. Extraction des couverts ----------
-    couverts_total = int(df.iloc[row_total, 1])
-    couverts_matin = int(df.iloc[row_total + 1, 1])
-    couverts_midi  = int(df.iloc[row_total + 2, 1])
-    couverts_soir  = int(df.iloc[row_total + 3, 1])
+    # Détection dynamique des colonnes clés
+    col_couverts = next(c for c in df.columns if "couvert" in c.lower())
+    col_ca_total = next(c for c in df.columns if ("total" in c.lower() and "ca" in c.lower()) or ("total" == c.lower()))
 
-    # ---------- 4. Extraction CA matin / midi / soir ----------
-    ca_matin = clean_amount(df.iloc[row_total + 1, 5])
-    ca_midi  = clean_amount(df.iloc[row_total + 2, 5])
-    ca_soir  = clean_amount(df.iloc[row_total + 3, 5])
+    # Filtrer les lignes non numériques pour éviter l’erreur "Couverts"
+    df_clean = df[df[col_couverts].apply(lambda x: str(x).replace(" ", "").isdigit())].copy()
 
-    # ---------- 5. Détection blocs Nourriture / Boissons ----------
-    idx_food = df[df.astype(str).apply(lambda r: r.str.contains("Nourriture", na=False)).any(axis=1)].index
-    idx_bar  = df[df.astype(str).apply(lambda r: r.str.contains("Boisson",    na=False)).any(axis=1)].index
+    df_clean[col_couverts] = df_clean[col_couverts].astype(int)
+    df_clean[col_ca_total] = df_clean[col_ca_total].apply(clean_amount)
 
-    food_midi = food_soir = bar_midi = bar_soir = 0.0
+    # Détection service + catégorie
+    df_clean["service"] = df["Revenu par centre de revenus"].apply(detect_service)
+    df_clean["categorie"] = df["Revenu par centre de revenus"].apply(detect_category)
 
-    if len(idx_food):
-        food_midi = clean_amount(df.iloc[idx_food[0] + 1, 5])
-        food_soir = clean_amount(df.iloc[idx_food[0] + 2, 5])
+    # Regroupement par service + catégorie
+    grouped = df_clean.groupby(["service", "categorie"]).agg({
+        col_couverts: "sum",
+        col_ca_total: "sum"
+    }).reset_index()
 
-    if len(idx_bar):
-        bar_midi = clean_amount(df.iloc[idx_bar[0] + 1, 5])
-        bar_soir = clean_amount(df.iloc[idx_bar[0] + 2, 5])
+    # Extraction structurée
+    output = {
+        "midi_nourriture": 0,
+        "midi_boissons": 0,
+        "soir_nourriture": 0,
+        "soir_boissons": 0,
+        "matin_nourriture": 0,
+        "matin_boissons": 0,
+        "total_couverts": df_clean[col_couverts].sum(),
+        "total_ca": df_clean[col_ca_total].sum(),
+        "details": df_clean
+    }
 
-    return pd.DataFrame({
-        "Date": [report_date],
-        "Couverts_midi": [couverts_midi],
-        "Couverts_soir": [couverts_soir],
-        "Couverts_total": [couverts_total],
+    for _, row in grouped.iterrows():
+        service = row["service"]
+        cat = row["categorie"]
+        ca = row[col_ca_total]
 
-        "Food_midi_TTC": [food_midi],
-        "Food_soir_TTC": [food_soir],
+        key = f"{service}_{cat}"
+        if key in output:
+            output[key] = ca
 
-        "Bar_midi_TTC": [bar_midi],
-        "Bar_soir_TTC": [bar_soir],
-
-        "CA_total_TTC": [food_midi + food_soir + bar_midi + bar_soir],
-    })
+    return output
