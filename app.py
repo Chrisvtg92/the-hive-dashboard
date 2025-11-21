@@ -1,457 +1,87 @@
+# ----------------------------------------------------------
+#     ANALYSE MENSUELLE – BUDGET / N-1 / RÉALISÉ
+# ----------------------------------------------------------
 import streamlit as st
+from parser_restotrack import parse_restotrack_daily
+from parser_n1 import parse_restotrack_month_n1
 import pandas as pd
-import plotly.express as px
-import os
-from datetime import datetime
-from parser_restotrack import parse_restotrack
-from io import BytesIO
 
-st.set_page_config(
-    page_title="The Hive – Dashboard",
-    layout="wide",
-    page_icon="🍯"
-)
+st.header("📅 Analyse Mensuelle – Budget / N-1 / Réalisé")
 
-# ---------------------------------------------------
-# STYLE + LOGO
-# ---------------------------------------------------
-st.markdown("""
-<style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {visibility: hidden;}
-</style>
-""", unsafe_allow_html=True)
+uploaded_budget = st.file_uploader("Importer Budget 2025", type=["xlsx"])
+uploaded_n1 = st.file_uploader("Importer N-1 (mois complet)", type=["xlsx"])
+uploaded_current = st.file_uploader("Importer les fichiers journaliers N", type=["xlsx"], accept_multiple_files=True)
 
-if os.path.exists("logo.png"):
-    st.image("logo.png", width=240)
-else:
-    st.title("THE HIVE – Dashboard")
+if uploaded_budget and uploaded_n1 and uploaded_current:
 
-# ---------------------------------------------------
-# SIDEBAR — UPLOAD DES FICHIERS
-# ---------------------------------------------------
-st.sidebar.title("📂 Import des fichiers")
+    # ------- A) CALCUL N (2025) -------
+    total_n = 0
+    total_couverts = 0
+    ca_nour_midi = 0
+    ca_nour_soir = 0
+    ca_boi_midi = 0
+    ca_boi_soir = 0
 
-file_realtime = st.sidebar.file_uploader(
-    "Importer fichier du jour (RestoTrack)", type=["xlsx"]
-)
+    for file in uploaded_current:
+        d = parse_restotrack_daily(file)
+        total_n += d["total_ca"]
+        total_couverts += d["couverts_midi"] + d["couverts_soir"]
+        ca_nour_midi += d["ca_nourriture_midi"]
+        ca_nour_soir += d["ca_nourriture_soir"]
+        ca_boi_midi += d["ca_boissons_midi"]
+        ca_boi_soir += d["ca_boissons_soir"]
 
-files_n1 = st.sidebar.file_uploader(
-    "Importer fichiers N-1 (plusieurs fichiers possible)",
-    type=["xlsx"],
-    accept_multiple_files=True
-)
+    # ------- B) CALCUL N-1 -------
+    d_n1 = parse_restotrack_month_n1(uploaded_n1)
+    total_n1 = d_n1["total"]
 
-file_budget = st.sidebar.file_uploader(
-    "Importer budget annuel 2025",
-    type=["xlsx"]
-)
+    # ------- C) BUDGET -------
+    df_budget = pd.read_excel(uploaded_budget)
+    df_budget.columns = df_budget.columns.str.upper()
 
-page = st.sidebar.radio(
-    "Navigation",
-    [
-        "Dashboard",
-        "Historique Journée",
-        "Analyse Mensuelle",
-        "Analyse Annuelle"
-    ]
-)
+    # On cherche le mois automatiquement via N1 filename
+    month_number = uploaded_n1.name[14:16]  # ex: "11"
+    month_number = int(month_number)
 
-# ---------------------------------------------------
-# FONCTION UTILE : Nettoyage nombre FR → float
-# ---------------------------------------------------
-def to_float(x):
-    if x is None or pd.isna(x):
-        return 0.0
-    s = str(x)
-    s = (s.replace("€", "")
-           .replace("%", "")
-           .replace("\\xa0", "")
-           .replace(" ", "")
-           .replace("\\u202f", "")
-           .replace(",", "."))
-    try:
-        return float(s)
-    except:
-        return 0.0
+    month_map = {
+        1:"JANVIER",2:"FÉVRIER",3:"MARS",4:"AVRIL",5:"MAI",6:"JUIN",
+        7:"JUILLET",8:"AOÛT",9:"SEPTEMBRE",10:"OCTOBRE",11:"NOVEMBRE",12:"DÉCEMBRE"
+    }
 
-# ---------------------------------------------------
-# FONCTION : Charger budget annuel 2025 TTC
-# ---------------------------------------------------
-def load_budget(budget_file):
-    df = pd.read_excel(budget_file)
+    col_month = month_map[month_number]
 
-    df.columns = [str(c).strip().lower() for c in df.columns]
+    budget_total = float(df_budget.loc[df_budget["A"]=="CA RESTO TTC", col_month])
 
-    month_col = [c for c in df.columns if "mois" in c][0]
-    resto_col = [c for c in df.columns if "resto" in c or "restaurant" in c][0]
-    bar_col = [c for c in df.columns if "bar" in c][0]
-    boutique_col = [c for c in df.columns if "boutique" in c][0]
-    total_col = [c for c in df.columns if "total" in c][0]
-    couverts_col = [c for c in df.columns if "couvert" in c][0]
+    # ------- D) KPI -------
+    ecart_n1 = total_n - total_n1
+    ecart_pct_n1 = (ecart_n1 / total_n1 * 100) if total_n1 else 0
 
-    df["mois"] = df[month_col]
-    df["ca_nourriture_budget"] = df[resto_col].apply(to_float) + df[boutique_col].apply(to_float)
-    df["ca_boissons_budget"] = df[bar_col].apply(to_float)
-    df["ca_total_budget"] = df[total_col].apply(to_float)
-    df["couverts_budget"] = df[couverts_col].apply(to_float)
+    ecart_budget = total_n - budget_total
+    ecart_pct_budget = (ecart_budget / budget_total * 100) if budget_total else 0
 
-    return df[[
-        "mois",
-        "ca_nourriture_budget",
-        "ca_boissons_budget",
-        "ca_total_budget",
-        "couverts_budget"
-    ]]
+    st.subheader("📊 KPIs du mois")
+    c1, c2, c3, c4, c5 = st.columns(5)
 
-# ---------------------------------------------------
-# FUSION DES FICHIERS N-1 (plusieurs fichiers)
-# ---------------------------------------------------
-def load_n1_files(n1_files):
-    if not n1_files:
-        return None
+    c1.metric("CA Réalisé (N)", f"{total_n:,.2f} €")
+    c2.metric("CA N-1", f"{total_n1:,.2f} €", f"{ecart_n1:,.2f} €")
+    c3.metric("Écart % N/N-1", f"{ecart_pct_n1:.1f} %")
+    c4.metric("Budget", f"{budget_total:,.2f} €", f"{ecart_budget:,.2f} €")
+    c5.metric("Écart % vs Budget", f"{ecart_pct_budget:.1f} %")
 
-    monthly_results = []
-
-    for f in n1_files:
-        try:
-            df_services, df_total, file_date = parse_restotrack(f)
-            month = pd.to_datetime(file_date).strftime("%m")
-
-            ca_midi_nourriture = df_total[
-                (df_total["Categorie"] == "Nourriture") &
-                (df_total["ServiceAgg"] == "Midi")
-            ]["CA"].sum()
-
-            ca_soir_nourriture = df_total[
-                (df_total["Categorie"] == "Nourriture") &
-                (df_total["ServiceAgg"] == "Soir")
-            ]["CA"].sum()
-
-            ca_midi_boissons = df_total[
-                (df_total["Categorie"] == "Boissons") &
-                (df_total["ServiceAgg"] == "Midi")
-            ]["CA"].sum()
-
-            ca_soir_boissons = df_total[
-                (df_total["Categorie"] == "Boissons") &
-                (df_total["ServiceAgg"] == "Soir")
-            ]["CA"].sum()
-
-            total_n1 = (
-                ca_midi_nourriture + ca_soir_nourriture +
-                ca_midi_boissons + ca_soir_boissons
-            )
-
-            monthly_results.append({
-                "mois": month,
-                "ca_n1": total_n1,
-                "n1_nourriture": ca_midi_nourriture + ca_soir_nourriture,
-                "n1_boissons": ca_midi_boissons + ca_soir_boissons,
-            })
-
-        except Exception as e:
-            st.warning(f"Erreur sur fichier N-1 : {getattr(f, 'name', '?')} — {e}")
-
-    if not monthly_results:
-        return None
-
-    df_n1 = pd.DataFrame(monthly_results)
-    df_n1 = df_n1.groupby("mois", as_index=False).sum()
-
-    return df_n1
-
-
-# ---------------------------------------------------
-# EXTRACTION MENSUELLE RÉALISÉ (à partir d’un fichier jour)
-# ---------------------------------------------------
-def extract_monthly_realised(df_services, report_date):
-    month = pd.to_datetime(report_date).strftime("%m")
-
-    ca_midi_n = df_services[
-        (df_services["Categorie"] == "Nourriture") &
-        (df_services["ServiceAgg"] == "Midi")
-    ]["CA"].sum()
-
-    ca_soir_n = df_services[
-        (df_services["Categorie"] == "Nourriture") &
-        (df_services["ServiceAgg"] == "Soir")
-    ]["CA"].sum()
-
-    ca_midi_b = df_services[
-        (df_services["Categorie"] == "Boissons") &
-        (df_services["ServiceAgg"] == "Midi")
-    ]["CA"].sum()
-
-    ca_soir_b = df_services[
-        (df_services["Categorie"] == "Boissons") &
-        (df_services["ServiceAgg"] == "Soir")
-    ]["CA"].sum()
-
-    total = ca_midi_n + ca_soir_n + ca_midi_b + ca_soir_b
-
-    return pd.DataFrame([{
-        "mois": month,
-        "realise": total,
-        "realise_nourriture": ca_midi_n + ca_soir_n,
-        "realise_boissons": ca_midi_b + ca_soir_b,
-    }])
-
-# ---------------------------------------------------
-# ANALYSE ANNUELLE (à partir des mensuels)
-# ---------------------------------------------------
-def compute_annual(df_budget, df_n1, df_realised):
-    annual = {}
-
-    annual["budget_total"] = df_budget["ca_total_budget"].sum()
-    annual["budget_nourriture"] = df_budget["ca_nourriture_budget"].sum()
-    annual["budget_boissons"] = df_budget["ca_boissons_budget"].sum()
-
-    if df_n1 is not None:
-        annual["n1_total"] = df_n1["ca_n1"].sum()
-    else:
-        annual["n1_total"] = 0
-
-    annual["realise_total"] = df_realised["realise"].sum()
-
-    annual["ecart_vs_budget"] = (
-        annual["realise_total"] - annual["budget_total"]
-    )
-
-    annual["atteinte"] = (
-        annual["realise_total"] / annual["budget_total"] * 100
-        if annual["budget_total"] > 0 else 0
-    )
-
-    return annual
-
-# ---------------------------------------------------
-# DASHBOARD JOURNALIER
-# ---------------------------------------------------
-if page == "Dashboard":
-
-    if not file_realtime:
-        st.warning("Importe le fichier du jour pour afficher le dashboard.")
-        st.stop()
-
-    df_services, df_total, report_date = parse_restotrack(file_realtime)
-
-    st.title(f"📊 Dashboard Journalier – {report_date}")
-
-    def get(df, cat, serv):
-        sub = df[(df["Categorie"] == cat) & (df["ServiceAgg"] == serv)]
-        return float(sub["CA"].sum())
-
-    def get_couv(df, cat, serv):
-        sub = df[(df["Categorie"] == cat) & (df["ServiceAgg"] == serv)]
-        return int(sub["Couverts"].sum())
-
-    # Nourriture
-    ca_n_midi = get(df_total, "Nourriture", "Midi")
-    ca_n_soir = get(df_total, "Nourriture", "Soir")
-
-    # Boissons
-    ca_b_midi = get(df_total, "Boissons", "Midi")
-    ca_b_soir = get(df_total, "Boissons", "Soir")
-
-    # Totaux CA TTC
-    ca_total = ca_n_midi + ca_n_soir + ca_b_midi + ca_b_soir
-
-    # Couverts (on prend les couverts nourriture)
-    couv_midi = get_couv(df_total, "Nourriture", "Midi")
-    couv_soir = get_couv(df_total, "Nourriture", "Soir")
-    couv_total = couv_midi + couv_soir
-
-    tm_midi = ca_n_midi / couv_midi if couv_midi > 0 else 0
-    tm_soir = ca_n_soir / couv_soir if couv_soir > 0 else 0
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("💰 CA Total TTC", f"{ca_total:,.2f} €")
-    c2.metric("👥 Total Couverts", couv_total)
-    c3.metric("🍽 PM Midi", f"{tm_midi:,.2f} €")
-    c4.metric("🌙 PM Soir", f"{tm_soir:,.2f} €")
-
-    st.subheader("Répartition du CA TTC")
-
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric("Nourriture Midi", f"{ca_n_midi:,.2f} €")
-    c6.metric("Nourriture Soir", f"{ca_n_soir:,.2f} €")
-    c7.metric("Bar Midi (Boissons)", f"{ca_b_midi:,.2f} €")
-    c8.metric("Bar Soir (Boissons)", f"{ca_b_soir:,.2f} €")
-
-    st.subheader("📈 CA par Service – Composition")
-
+    # ------- E) Graphique simple -------
     df_graph = pd.DataFrame({
-        "Service": ["Midi", "Soir", "Midi", "Soir"],
-        "Catégorie": ["Nourriture", "Nourriture", "Boissons", "Boissons"],
-        "CA TTC": [ca_n_midi, ca_n_soir, ca_b_midi, ca_b_soir]
+        "Type": ["N", "N-1", "Budget"],
+        "CA": [total_n, total_n1, budget_total]
     })
 
-    fig = px.bar(
-        df_graph,
-        x="Service",
-        y="CA TTC",
-        color="Catégorie",
-        barmode="group",
-        text_auto=True
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    st.bar_chart(df_graph.set_index("Type"))
 
-# ---------------------------------------------------
-# HISTORIQUE JOURNALIER
-# ---------------------------------------------------
-elif page == "Historique Journée":
+    # ------- F) Répartition -------
+    st.subheader("Répartition du CA")
 
-    if not file_realtime:
-        st.warning("Importe le fichier du jour pour afficher l’historique.")
-        st.stop()
-
-    df_services, df_total, report_date = parse_restotrack(file_realtime)
-
-    st.title("📜 Historique – Détails de la journée")
-
-    df_hist = []
-
-    df_hist.append({
-        "Date": report_date,
-        "Service": "Midi",
-        "Couverts": df_total[(df_total["Categorie"]=="Nourriture") &
-                             (df_total["ServiceAgg"]=="Midi")]["Couverts"].sum(),
-        "CA Nourriture TTC": df_total[(df_total["Categorie"]=="Nourriture") &
-                                      (df_total["ServiceAgg"]=="Midi")]["CA"].sum(),
-        "CA Boissons TTC": df_total[(df_total["Categorie"]=="Boissons") &
-                                    (df_total["ServiceAgg"]=="Midi")]["CA"].sum()
+    df_rep = pd.DataFrame({
+        "Catégorie": ["Nourriture Midi","Nourriture Soir","Boissons Midi","Boissons Soir"],
+        "CA": [ca_nour_midi, ca_nour_soir, ca_boi_midi, ca_boi_soir]
     })
 
-    df_hist.append({
-        "Date": report_date,
-        "Service": "Soir",
-        "Couverts": df_total[(df_total["Categorie"]=="Nourriture") &
-                             (df_total["ServiceAgg"]=="Soir")]["Couverts"].sum(),
-        "CA Nourriture TTC": df_total[(df_total["Categorie"]=="Nourriture") &
-                                      (df_total["ServiceAgg"]=="Soir")]["CA"].sum(),
-        "CA Boissons TTC": df_total[(df_total["Categorie"]=="Boissons") &
-                                    (df_total["ServiceAgg"]=="Soir")]["CA"].sum()
-    })
-
-    st.dataframe(pd.DataFrame(df_hist), use_container_width=True)
-
-# ---------------------------------------------------
-# ANALYSE MENSUELLE
-# ---------------------------------------------------
-elif page == "Analyse Mensuelle":
-
-    st.title("📆 Analyse Mensuelle – Budget / N-1 / Réalisé")
-
-    if not file_budget:
-        st.warning("⚠️ Merci d’importer le fichier BUDGET 2025.")
-        st.stop()
-
-    df_budget = load_budget(file_budget)
-    df_n1 = load_n1_files(files_n1)
-
-    if df_n1 is None:
-        st.warning("⚠️ Aucun fichier N-1 importé. Impossible d’afficher N-1.")
-        df_n1 = pd.DataFrame(columns=["mois", "ca_n1"])
-
-    if not file_realtime:
-        st.warning("Merci d'importer le fichier du jour pour calculer le réalisé.")
-        st.stop()
-
-    df_services, df_total, report_date = parse_restotrack(file_realtime)
-    df_real_m = extract_monthly_realised(df_total, report_date)
-
-    df_merge = df_budget.merge(df_n1, on="mois", how="left")\
-                        .merge(df_real_m, on="mois", how="left")
-
-    df_merge = df_merge.fillna(0)
-
-    df_merge["ecart_vs_budget"] = df_merge["realise"] - df_merge["ca_total_budget"]
-    df_merge["ecart_vs_n1"] = df_merge["realise"] - df_merge["ca_n1"]
-
-    df_merge["atteinte_budget_%"] = df_merge.apply(
-        lambda r: (r["realise"] / r["ca_total_budget"] * 100) if r["ca_total_budget"] > 0 else 0,
-        axis=1
-    )
-
-    st.subheader("📊 Tableau Mensuel")
-
-    st.dataframe(
-        df_merge[[
-            "mois",
-            "realise",
-            "ca_total_budget",
-            "ca_n1",
-            "ecart_vs_budget",
-            "ecart_vs_n1",
-            "atteinte_budget_%"
-        ]],
-        use_container_width=True
-    )
-
-    st.subheader("📈 Budget vs N-1 vs Réalisé")
-
-    df_plot = df_merge.copy()
-    df_plot["Mois"] = df_plot["mois"]
-
-    fig = px.bar(
-        df_plot,
-        x="Mois",
-        y=["realise", "ca_total_budget", "ca_n1"],
-        barmode="group",
-        labels={"value": "Montant (€)", "variable": "Catégorie"},
-        text_auto=True
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("🎯 Objectif du mois")
-
-    obj_mens = float(df_merge.loc[0, "ca_total_budget"])
-    real_mens = float(df_merge.loc[0, "realise"])
-    reste = obj_mens - real_mens
-    atteinte = real_mens / obj_mens * 100 if obj_mens > 0 else 0
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Budget du mois", f"{obj_mens:,.2f} €")
-    c2.metric("Réalisé", f"{real_mens:,.2f} €")
-    c3.metric("Atteinte", f"{atteinte:,.1f} %")
-
-    st.info(f"Reste à faire : **{reste:,.2f} €**")
-
-# ---------------------------------------------------
-# ANALYSE ANNUELLE
-# ---------------------------------------------------
-else:  # Analyse Annuelle
-
-    st.title("📅 Analyse Annuelle – Budget / N-1 / Réalisé")
-
-    if not file_budget:
-        st.warning("⚠️ Merci d’importer le fichier budget.")
-        st.stop()
-
-    if not file_realtime:
-        st.warning("⚠️ Merci d’importer un fichier du jour.")
-        st.stop()
-
-    df_services, df_total, report_date = parse_restotrack(file_realtime)
-    df_realised_m = extract_monthly_realised(df_total, report_date)
-    df_budget = load_budget(file_budget)
-    df_n1 = load_n1_files(files_n1)
-
-    if df_n1 is None:
-        df_n1 = pd.DataFrame(columns=["mois", "ca_n1"])
-
-    annual = compute_annual(df_budget, df_n1, df_realised_m)
-
-    st.subheader("🔢 Résumé Annuel")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Budget Annuel", f"{annual['budget_total']:,.2f} €")
-    c2.metric("Réalisé", f"{annual['realise_total']:,.2f} €")
-    c3.metric("N-1", f"{annual['n1_total']:,.2f} €")
-    c4.metric("Atteinte", f"{annual['atteinte']:,.1f} %")
-
-    ecart = annual["ecart_vs_budget"]
-    st.success(f"Écart vs Budget : **{ecart:,.2f} €**", icon="📉")
-
+    st.bar_chart(df_rep.set_index("Catégorie"))
