@@ -19,29 +19,28 @@ def clean_amount(value):
 
 def detect_category(text):
     """Retourne 'nourriture' ou 'boissons' selon la nature du poste."""
-    text = text.lower()
+    text = str(text).lower()
 
     food_keywords = ["food", "nourriture", "resto", "restaurant", "plat", "meal"]
     drink_keywords = ["boisson", "drink", "bar", "beverage"]
 
-    if any(k in text for k in food_keywords):
-        return "nourriture"
     if any(k in text for k in drink_keywords):
         return "boissons"
+    if any(k in text for k in food_keywords):
+        return "nourriture"
 
-    # fallback : nourriture
     return "nourriture"
 
 
-def detect_service(row_label):
+def detect_service(text):
     """Analyse du centre de revenu → matin / midi / soir."""
-    label = row_label.lower()
+    t = str(text).lower()
 
-    if "04:00" in label and "11:00" in label:
+    if "04:00" in t and "11:00" in t:
         return "matin"
-    if "11:00" in label and "17:00" in label:
+    if "11:00" in t and "17:00" in t:
         return "midi"
-    if "17:00" in label and "04:00" in label:
+    if "17:00" in t and "04:00" in t:
         return "soir"
 
     # fallback : midi
@@ -55,9 +54,12 @@ def detect_service(row_label):
 def parse_daily_report(file):
     """
     Parse un fichier Cumulatif_YYYYMMDD.xlsx venant de RestoTrack.
-    Retourne :
-        - dataframe propre par service
-        - totaux midi/soir/nourriture/boissons
+    Retourne un dictionnaire structuré contenant :
+        - CA par service
+        - CA par catégorie
+        - total CA
+        - total couverts
+        - dataframe détaillé nettoyé
     """
 
     df = pd.read_excel(file)
@@ -65,46 +67,53 @@ def parse_daily_report(file):
     # Nettoyage des noms de colonnes
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Détection dynamique des colonnes clés
+    # Détections automatiques des colonnes
     col_couverts = next(c for c in df.columns if "couvert" in c.lower())
-    col_ca_total = next(c for c in df.columns if ("total" in c.lower() and "ca" in c.lower()) or ("total" == c.lower()))
+    col_ca = next(c for c in df.columns if "total" in c.lower() and "ca" in c.lower())
 
-    # Filtrer les lignes non numériques pour éviter l’erreur "Couverts"
-    df_clean = df[df[col_couverts].apply(lambda x: str(x).replace(" ", "").isdigit())].copy()
+    # Colonne libellés centre de revenu
+    col_label = df.columns[0]   # "Revenu par centre de revenus"
 
-    df_clean[col_couverts] = df_clean[col_couverts].astype(int)
-    df_clean[col_ca_total] = df_clean[col_ca_total].apply(clean_amount)
+    # Nettoyage de la colonne couverts
+    df[col_couverts] = (
+        df[col_couverts]
+        .astype(str)
+        .str.replace(" ", "")
+        .str.extract(r"(\d+)", expand=False)
+    )
+
+    df = df.dropna(subset=[col_couverts])
+
+    df[col_couverts] = df[col_couverts].astype(int)
+
+    # Nettoyage CA
+    df[col_ca] = df[col_ca].apply(clean_amount)
 
     # Détection service + catégorie
-    df_clean["service"] = df["Revenu par centre de revenus"].apply(detect_service)
-    df_clean["categorie"] = df["Revenu par centre de revenus"].apply(detect_category)
+    df["service"] = df[col_label].apply(detect_service)
+    df["categorie"] = df[col_label].apply(detect_category)
 
-    # Regroupement par service + catégorie
-    grouped = df_clean.groupby(["service", "categorie"]).agg({
+    # Groupement
+    grouped = df.groupby(["service", "categorie"]).agg({
         col_couverts: "sum",
-        col_ca_total: "sum"
+        col_ca: "sum"
     }).reset_index()
 
-    # Extraction structurée
-    output = {
+    out = {
         "midi_nourriture": 0,
         "midi_boissons": 0,
         "soir_nourriture": 0,
         "soir_boissons": 0,
         "matin_nourriture": 0,
         "matin_boissons": 0,
-        "total_couverts": df_clean[col_couverts].sum(),
-        "total_ca": df_clean[col_ca_total].sum(),
-        "details": df_clean
+        "total_couverts": df[col_couverts].sum(),
+        "total_ca": df[col_ca].sum(),
+        "details": df
     }
 
     for _, row in grouped.iterrows():
-        service = row["service"]
-        cat = row["categorie"]
-        ca = row[col_ca_total]
+        key = f"{row['service']}_{row['categorie']}"
+        if key in out:
+            out[key] = row[col_ca]
 
-        key = f"{service}_{cat}"
-        if key in output:
-            output[key] = ca
-
-    return output
+    return out
