@@ -1,145 +1,112 @@
 import pandas as pd
-import numpy as np
 
-# --------------------------------------------------------
-# Détection automatique de catégorie
-# --------------------------------------------------------
-def detect_category(label: str) -> str:
-    if not isinstance(label, str):
-        return "unknown"
-    label = label.lower()
+# ---------------------------------------------------------
+#  PARSER RESTOTRACK — Rapport Journalier
+# ---------------------------------------------------------
+# - Récupère la date du rapport
+# - Détecte les blocs "Nourriture" / "Boissons"
+# - Calcule CA TTC Midi / Soir
+# - Sépare les couverts pour midi / soir
+# ---------------------------------------------------------
 
-    food = ["food", "nourriture", "restaurant", "resto", "snack", "boutique"]
-    drinks = ["bar", "boisson", "drink", "beverage", "beer", "wine"]
+def parse_daily_report(file):
+    # Lecture du fichier Excel
+    df = pd.read_excel(file, header=None)
 
-    if any(k in label for k in food):
-        return "food"
-    if any(k in label for k in drinks):
-        return "drinks"
-    return "unknown"
+    # ---------------------------
+    # 1. Extraction de la date
+    # ---------------------------
+    report_date = None
+    for col in df.columns:
+        for row in df[col].dropna().astype(str):
+            if "/" in row and len(row) >= 8:
+                try:
+                    report_date = pd.to_datetime(row, dayfirst=True)
+                    break
+                except:
+                    pass
+        if report_date is not None:
+            break
 
+    if report_date is None:
+        raise ValueError("Impossible de détecter la date du rapport.")
 
-def clean_amount(val):
-    if pd.isna(val):
-        return 0.0
-    val = str(val).replace("€", "").replace(" ", "").replace(",", ".")
-    try:
-        return float(val)
-    except:
-        return 0.0
+    # ---------------------------
+    # 2. Détection des index utiles
+    # ---------------------------
 
+    # Index du bloc "Total / Matin / Déjeuner-Midi / Nuit"
+    idx_total = df[df.astype(str).apply(lambda row: row.str.contains("Total", na=False)).any(axis=1)].index
+    if len(idx_total) == 0:
+        raise ValueError("Impossible de trouver la ligne 'Total'.")
 
-# --------------------------------------------------------
-# PARSER JOURNALIER RESTOTRACK (premium)
-# --------------------------------------------------------
-def parse_restotrack_daily(path):
+    row_total = idx_total[0]
 
-    df = pd.read_excel(path, header=None)
+    # Extraction couverts
+    couverts_total = int(df.iloc[row_total, 1])
 
-    # -------------- DATE --------------
-    try:
-        report_date = pd.to_datetime(df.iloc[0, 2])
-    except:
-        report_date = None
+    # Matin (souvent = petit dej → mis dans MIDI Nourriture ou Boisson selon catégorie)
+    row_matin = row_total + 1
+    couverts_matin = int(df.iloc[row_matin, 1])
+    ca_matin_ttc = float(str(df.iloc[row_matin, 5]).replace("€", "").replace(",", ".").strip())
 
-    # -------------- INDEXES MIDI / SOIR / MATIN --------------
-    midi_idx = df[df[0].astype(str).str.contains("Déjeuner/midi", case=False, na=False)].index
-    soir_idx = df[df[0].astype(str).str.contains("Nuit", case=False, na=False)].index
-    matin_idx = df[df[0].astype(str).str.contains("Matin", case=False, na=False)].index
+    # Déjeuner / Midi
+    row_midi = row_total + 2
+    couverts_midi = int(df.iloc[row_midi, 1])
+    ca_midi_ttc = float(str(df.iloc[row_midi, 5]).replace("€", "").replace(",", ".").strip())
 
-    results = {
-        "date": report_date,
-        "ca_midi_food": 0,
-        "ca_midi_drinks": 0,
-        "ca_soir_food": 0,
-        "ca_soir_drinks": 0,
-        "couverts_midi": 0,
-        "couverts_soir": 0,
-        "total_ca": 0
+    # Soir
+    row_soir = row_total + 3
+    couverts_soir = int(df.iloc[row_soir, 1])
+    ca_soir_ttc = float(str(df.iloc[row_soir, 5]).replace("€", "").replace(",", ".").strip())
+
+    # ---------------------------
+    # 3. Répartition nourriture / boisson
+    # ---------------------------
+
+    # Recherche du bloc Nourriture
+    idx_food = df[df.astype(str).apply(
+        lambda row: row.str.contains("Nourriture", na=False)
+    ).any(axis=1)].index
+
+    if len(idx_food) == 0:
+        raise ValueError("Impossible de trouver le bloc Nourriture.")
+
+    row_food = idx_food[0]
+
+    food_midi = float(str(df.iloc[row_food + 1, 5]).replace("€", "").replace(",", ".").strip())
+    food_soir = float(str(df.iloc[row_food + 2, 5]).replace("€", "").replace(",", ".").strip())
+
+    # Recherche du bloc Boissons
+    idx_bar = df[df.astype(str).apply(
+        lambda row: row.str.contains("Boisson", na=False)
+    ).any(axis=1)].index
+
+    if len(idx_bar) == 0:
+        raise ValueError("Impossible de trouver le bloc Boissons.")
+
+    row_bar = idx_bar[0]
+
+    bar_midi = float(str(df.iloc[row_bar + 1, 5]).replace("€", "").replace(",", ".").strip())
+    bar_soir = float(str(df.iloc[row_bar + 2, 5]).replace("€", "").replace(",", ".").strip())
+
+    # ---------------------------
+    # 4. Construction du dataframe final
+    # ---------------------------
+
+    data = {
+        "Date": [report_date],
+        "Couverts_midi": [couverts_midi],
+        "Couverts_soir": [couverts_soir],
+        "Couverts_total": [couverts_total],
+
+        "Food_midi_TTC": [food_midi],
+        "Food_soir_TTC": [food_soir],
+
+        "Bar_midi_TTC": [bar_midi],
+        "Bar_soir_TTC": [bar_soir],
+
+        "CA_total_TTC": [food_midi + food_soir + bar_midi + bar_soir],
     }
 
-    # ----------------------------------------------------
-    # BLOC MATIN → ajouté au MIDI
-    # ----------------------------------------------------
-    for i in matin_idx:
-        if "pas de centre" in str(df.loc[i+1, 0]).lower():
-            continue
-
-        cat = detect_category(str(df.loc[i+1,0]))
-        ca = clean_amount(df.loc[i+1, 5])
-
-        if cat == "food":
-            results["ca_midi_food"] += ca
-        elif cat == "drinks":
-            results["ca_midi_drinks"] += ca
-
-        # couverts matin → midi
-        try:
-            results["couverts_midi"] += int(df.loc[i,1])
-        except:
-            pass
-
-
-    # ----------------------------------------------------
-    # BLOC MIDI
-    # ----------------------------------------------------
-    for i in midi_idx:
-
-        try:
-            results["couverts_midi"] += int(df.loc[i,1])
-        except:
-            pass
-
-        k = i + 1
-        while isinstance(df.loc[k,0], str) and df.loc[k,0] != "":
-            if "pas de centre" in str(df.loc[k,0]).lower():
-                k += 1
-                continue
-
-            cat = detect_category(str(df.loc[k,0]))
-            ca = clean_amount(df.loc[k,5])
-
-            if cat == "food":
-                results["ca_midi_food"] += ca
-            elif cat == "drinks":
-                results["ca_midi_drinks"] += ca
-
-            k += 1
-
-    # ----------------------------------------------------
-    # BLOC SOIR / NUIT
-    # ----------------------------------------------------
-    for i in soir_idx:
-
-        try:
-            results["couverts_soir"] = int(df.loc[i,1])
-        except:
-            pass
-
-        k = i + 1
-        while isinstance(df.loc[k,0], str) and df.loc[k,0] != "":
-            if "pas de centre" in str(df.loc[k,0]).lower():
-                k += 1
-                continue
-
-            cat = detect_category(str(df.loc[k,0]))
-            ca = clean_amount(df.loc[k,5])
-
-            if cat == "food":
-                results["ca_soir_food"] += ca
-            elif cat == "drinks":
-                results["ca_soir_drinks"] += ca
-
-            k += 1
-
-    # ----------------------------------------------------
-    # TOTAL JOUR
-    # ----------------------------------------------------
-    results["total_ca"] = (
-        results["ca_midi_food"] +
-        results["ca_midi_drinks"] +
-        results["ca_soir_food"] +
-        results["ca_soir_drinks"]
-    )
-
-    return results
+    return pd.DataFrame(data)
