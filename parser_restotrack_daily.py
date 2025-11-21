@@ -1,25 +1,42 @@
 import pandas as pd
 
-# ---------------------------------------------------------
-#  PARSER RESTOTRACK — Rapport Journalier
-# ---------------------------------------------------------
-# - Récupère la date du rapport
-# - Détecte les blocs "Nourriture" / "Boissons"
-# - Calcule CA TTC Midi / Soir
-# - Sépare les couverts pour midi / soir
-# ---------------------------------------------------------
+# ---------------------------------------
+#  FUNCTIONS USED BY DAILY + N-1 PARSER
+# ---------------------------------------
+
+def clean_amount(value):
+    """Convertit un montant Excel (ex : '1.234,56 €') en float Python."""
+    if value is None:
+        return 0.0
+    value = str(value).replace("€", "").replace(" ", "").replace(".", "").replace(",", ".")
+    try:
+        return float(value)
+    except:
+        return 0.0
+
+def detect_category(text):
+    """Détecte si une ligne appartient à Nourriture / Boissons."""
+    if not isinstance(text, str):
+        return None
+    t = text.lower()
+    if "nourriture" in t or "resta" in t or "food" in t:
+        return "food"
+    if "boisson" in t or "bar" in t or "drink" in t:
+        return "bar"
+    return None
+
+# ---------------------------------------
+#  PARSER DAILY REPORT
+# ---------------------------------------
 
 def parse_daily_report(file):
-    # Lecture du fichier Excel
     df = pd.read_excel(file, header=None)
 
-    # ---------------------------
-    # 1. Extraction de la date
-    # ---------------------------
+    # ---------- 1. Extraction date ----------
     report_date = None
     for col in df.columns:
         for row in df[col].dropna().astype(str):
-            if "/" in row and len(row) >= 8:
+            if "/" in row:
                 try:
                     report_date = pd.to_datetime(row, dayfirst=True)
                     break
@@ -27,74 +44,41 @@ def parse_daily_report(file):
                     pass
         if report_date is not None:
             break
-
     if report_date is None:
         raise ValueError("Impossible de détecter la date du rapport.")
 
-    # ---------------------------
-    # 2. Détection des index utiles
-    # ---------------------------
-
-    # Index du bloc "Total / Matin / Déjeuner-Midi / Nuit"
-    idx_total = df[df.astype(str).apply(lambda row: row.str.contains("Total", na=False)).any(axis=1)].index
+    # ---------- 2. Trouver bloc Total ----------
+    idx_total = df[df.astype(str).apply(lambda r: r.str.contains("Total", na=False)).any(axis=1)].index
     if len(idx_total) == 0:
-        raise ValueError("Impossible de trouver la ligne 'Total'.")
-
+        raise ValueError("Ligne 'Total' introuvable")
     row_total = idx_total[0]
 
-    # Extraction couverts
+    # ---------- 3. Extraction des couverts ----------
     couverts_total = int(df.iloc[row_total, 1])
+    couverts_matin = int(df.iloc[row_total + 1, 1])
+    couverts_midi  = int(df.iloc[row_total + 2, 1])
+    couverts_soir  = int(df.iloc[row_total + 3, 1])
 
-    # Matin (souvent = petit dej → mis dans MIDI Nourriture ou Boisson selon catégorie)
-    row_matin = row_total + 1
-    couverts_matin = int(df.iloc[row_matin, 1])
-    ca_matin_ttc = float(str(df.iloc[row_matin, 5]).replace("€", "").replace(",", ".").strip())
+    # ---------- 4. Extraction CA matin / midi / soir ----------
+    ca_matin = clean_amount(df.iloc[row_total + 1, 5])
+    ca_midi  = clean_amount(df.iloc[row_total + 2, 5])
+    ca_soir  = clean_amount(df.iloc[row_total + 3, 5])
 
-    # Déjeuner / Midi
-    row_midi = row_total + 2
-    couverts_midi = int(df.iloc[row_midi, 1])
-    ca_midi_ttc = float(str(df.iloc[row_midi, 5]).replace("€", "").replace(",", ".").strip())
+    # ---------- 5. Détection blocs Nourriture / Boissons ----------
+    idx_food = df[df.astype(str).apply(lambda r: r.str.contains("Nourriture", na=False)).any(axis=1)].index
+    idx_bar  = df[df.astype(str).apply(lambda r: r.str.contains("Boisson",    na=False)).any(axis=1)].index
 
-    # Soir
-    row_soir = row_total + 3
-    couverts_soir = int(df.iloc[row_soir, 1])
-    ca_soir_ttc = float(str(df.iloc[row_soir, 5]).replace("€", "").replace(",", ".").strip())
+    food_midi = food_soir = bar_midi = bar_soir = 0.0
 
-    # ---------------------------
-    # 3. Répartition nourriture / boisson
-    # ---------------------------
+    if len(idx_food):
+        food_midi = clean_amount(df.iloc[idx_food[0] + 1, 5])
+        food_soir = clean_amount(df.iloc[idx_food[0] + 2, 5])
 
-    # Recherche du bloc Nourriture
-    idx_food = df[df.astype(str).apply(
-        lambda row: row.str.contains("Nourriture", na=False)
-    ).any(axis=1)].index
+    if len(idx_bar):
+        bar_midi = clean_amount(df.iloc[idx_bar[0] + 1, 5])
+        bar_soir = clean_amount(df.iloc[idx_bar[0] + 2, 5])
 
-    if len(idx_food) == 0:
-        raise ValueError("Impossible de trouver le bloc Nourriture.")
-
-    row_food = idx_food[0]
-
-    food_midi = float(str(df.iloc[row_food + 1, 5]).replace("€", "").replace(",", ".").strip())
-    food_soir = float(str(df.iloc[row_food + 2, 5]).replace("€", "").replace(",", ".").strip())
-
-    # Recherche du bloc Boissons
-    idx_bar = df[df.astype(str).apply(
-        lambda row: row.str.contains("Boisson", na=False)
-    ).any(axis=1)].index
-
-    if len(idx_bar) == 0:
-        raise ValueError("Impossible de trouver le bloc Boissons.")
-
-    row_bar = idx_bar[0]
-
-    bar_midi = float(str(df.iloc[row_bar + 1, 5]).replace("€", "").replace(",", ".").strip())
-    bar_soir = float(str(df.iloc[row_bar + 2, 5]).replace("€", "").replace(",", ".").strip())
-
-    # ---------------------------
-    # 4. Construction du dataframe final
-    # ---------------------------
-
-    data = {
+    return pd.DataFrame({
         "Date": [report_date],
         "Couverts_midi": [couverts_midi],
         "Couverts_soir": [couverts_soir],
@@ -107,6 +91,4 @@ def parse_daily_report(file):
         "Bar_soir_TTC": [bar_soir],
 
         "CA_total_TTC": [food_midi + food_soir + bar_midi + bar_soir],
-    }
-
-    return pd.DataFrame(data)
+    })
