@@ -1,153 +1,190 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import plotly.express as px
+
 from parser_restotrack_daily import parse_daily_report
 from parser_n1 import parse_n1_month
 from budget_loader import load_budget
 
-# ---------------------------
-#   CONFIG APP
-# ---------------------------
+# -----------------------------------------------------------
+# CONFIGURATION GLOBALE
+# -----------------------------------------------------------
 st.set_page_config(
-    page_title="The Hive – Dashboard",
+    page_title="Dashboard – Reporting The Hive",
     layout="wide",
-    page_icon="🍯"
 )
 
-# ---------------------------
-#   LOGO
-# ---------------------------
-try:
-    st.image("logo.png", width=180)
-except:
-    st.warning("⚠️ Logo introuvable : assure-toi que 'logo.png' est bien à la racine du repo.")
+# -----------------------------------------------------------
+# CHARGEMENT DU CSS THEME
+# -----------------------------------------------------------
+with open("theme.css", "r") as css:
+    st.markdown(f"<style>{css.read()}</style>", unsafe_allow_html=True)
 
-st.title("📊 Dashboard – Reporting The Hive")
+# -----------------------------------------------------------
+# LOGO
+# -----------------------------------------------------------
+st.image("logo.png", width=180)
+st.markdown("## Dashboard – Reporting The Hive")
 
 
-# ---------------------------
-#   MENU LATERAL
-# ---------------------------
+# -----------------------------------------------------------
+# MENU LATÉRAL
+# -----------------------------------------------------------
 menu = st.sidebar.radio(
     "Navigation",
-    [
-        "📅 Rapport Journalier",
-        "📈 Analyse Mensuelle",
-        "📊 Analyse Annuelle",
-        "🕒 Historique"
-    ]
+    ["Rapport Journalier – Import RestoTrack", "Analyse Mensuelle – Budget / N-1 / Réalisé", "Analyse Annuelle"]
 )
 
 
-# ============================================================================================
-#  📅 — PAGE 1 — RAPPORT JOURNALIER
-# ============================================================================================
-if menu == "📅 Rapport Journalier":
-    st.header("📅 Rapport Journalier – Import RestoTrack")
+# -----------------------------------------------------------
+# PAGE 1 — RAPPORT JOURNALIER
+# -----------------------------------------------------------
+if menu == "Rapport Journalier – Import RestoTrack":
 
-    uploaded_file = st.file_uploader(
+    st.markdown("### 📅 Rapport Journalier – Import RestoTrack")
+
+    uploaded = st.file_uploader(
         "Importer un fichier **Cumulatif_YYYYMMDD.xlsx**",
-        type=["xlsx"]
+        type=["xlsx"],
+        accept_multiple_files=False
     )
 
-    if uploaded_file:
+    if uploaded:
         try:
-            df_daily, resume = parse_daily_report(uploaded_file)
+            data = parse_daily_report(uploaded)
 
-            st.success("✔️ Fichier traité avec succès !")
+            st.success("Fichier traité avec succès ✔")
 
-            # Résumé KPI
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("CA Total TTC", f"{resume['ca_total']:.2f} €")
-            col2.metric("Couverts Total", resume["couverts_total"])
-            col3.metric("Panier Moyen Midi", f"{resume['pm_midi']:.2f} €")
-            col4.metric("Panier Moyen Soir", f"{resume['pm_soir']:.2f} €")
 
-            # Détails nourriture & boissons
-            st.subheader("Répartition CA TTC")
-            colA, colB, colC, colD = st.columns(4)
-            colA.metric("Nourriture Midi", f"{resume['food_midi']:.2f} €")
-            colB.metric("Nourriture Soir", f"{resume['food_soir']:.2f} €")
-            colC.metric("Boissons Midi", f"{resume['drink_midi']:.2f} €")
-            colD.metric("Boissons Soir", f"{resume['drink_soir']:.2f} €")
+            with col1:
+                st.metric("CA Total TTC", f"{data['total_ca']:.2f} €")
 
-            st.divider()
+            with col2:
+                st.metric("Total Couverts", data["total_couverts"])
 
-            # Graphique
-            st.subheader("📊 CA par Service et Catégorie")
-            st.bar_chart(df_daily.set_index("Service")[["Food", "Drinks"]])
+            with col3:
+                st.metric("CA Midi – Nourriture", f"{data['midi_nourriture']:.2f} €")
+
+            with col4:
+                st.metric("CA Soir – Nourriture", f"{data['soir_nourriture']:.2f} €")
+
+            col5, col6 = st.columns(2)
+            with col5:
+                st.metric("CA Midi – Boissons", f"{data['midi_boissons']:.2f} €")
+            with col6:
+                st.metric("CA Soir – Boissons", f"{data['soir_boissons']:.2f} €")
+
+            # Graphique composition
+            df_graph = pd.DataFrame({
+                "Service": ["Midi", "Midi", "Soir", "Soir"],
+                "Catégorie": ["Nourriture", "Boissons", "Nourriture", "Boissons"],
+                "CA": [
+                    data["midi_nourriture"],
+                    data["midi_boissons"],
+                    data["soir_nourriture"],
+                    data["soir_boissons"],
+                ]
+            })
+
+            fig = px.bar(
+                df_graph,
+                x="Service",
+                y="CA",
+                color="Catégorie",
+                barmode="group",
+                title="Répartition du CA par service",
+                text_auto=True
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("### 📄 Détails bruts du fichier")
+            st.dataframe(data["details"], use_container_width=True)
 
         except Exception as e:
-            st.error(f"❌ Erreur lors du traitement : {e}")
+            st.error(f"Erreur lors du traitement : {e}")
 
 
-# ============================================================================================
-#  📈 — PAGE 2 — ANALYSE MENSUELLE
-# ============================================================================================
-if menu == "📈 Analyse Mensuelle":
-    st.header("📈 Analyse Mensuelle")
+# -----------------------------------------------------------
+# PAGE 2 — ANALYSE MENSUELLE
+# -----------------------------------------------------------
+elif menu == "Analyse Mensuelle – Budget / N-1 / Réalisé":
 
-    uploaded_budget = st.file_uploader("Importer le fichier Budget 2025", type=["xlsx"])
-    uploaded_n1 = st.file_uploader("Importer le cumulatif N-1 (mois)", type=["xlsx"])
-    uploaded_realised = st.file_uploader("Importer les rapports journaliers cumulés", type=["csv"])
+    st.markdown("## 📊 Analyse Mensuelle — Budget / N-1 / Réalisé")
 
-    if uploaded_budget and uploaded_realised:
+    colA, colB, colC = st.columns(3)
+
+    with colA:
+        fichier_n1 = st.file_uploader("Importer fichier N-1 (mois complet)", type=["xlsx"], key="n1")
+
+    with colB:
+        fichier_budget = st.file_uploader("Importer Budget Annuel", type=["xlsx"], key="budget")
+
+    with colC:
+        fichier_resto = st.file_uploader("Importer les fichiers journaliers 2025", type=["xlsx"], accept_multiple_files=True, key="resto")
+
+    if fichier_n1 and fichier_budget and fichier_resto:
         try:
-            df_budget = load_budget(uploaded_budget)
-            df_n1 = parse_n1_month(uploaded_n1) if uploaded_n1 else None
-            df_real = pd.read_csv(uploaded_realised)
+            df_n1 = parse_n1_month(fichier_n1)
+            df_budget = load_budget(fichier_budget)
 
-            st.success("✔️ Données chargées")
+            # Agrégation du réalisé 2025
+            df_journalier = []
+            for f in fichier_resto:
+                parsed = parse_daily_report(f)
+                df_journalier.append({
+                    "ca": parsed["total_ca"],
+                    "couverts": parsed["total_couverts"]
+                })
+            df_reel = pd.DataFrame(df_journalier)
+            df_reel_month = df_reel.sum()
 
-            st.subheader("Comparatif Budget / Réalisé")
-            st.line_chart(df_real.set_index("Mois")[["CA", "Budget"]])
+            # Display section
+            st.success("Tous les fichiers ont été traités ✔")
 
-            if df_n1 is not None:
-                st.subheader("Comparatif N-1")
-                st.line_chart(df_real.set_index("Mois")[["CA", "N1"]])
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("CA Réalisé", f"{df_reel_month['ca']:.2f} €")
+            with col2:
+                st.metric("CA Budget", f"{df_budget['CA TTC'].sum():.2f} €")
+            with col3:
+                st.metric("CA N-1", f"{df_n1['ca_total'].sum():.2f} €")
 
-        except Exception as e:
-            st.error(f"Erreur : {e}")
+            st.markdown("---")
+            st.markdown("### Comparatif Graphique")
 
+            compar = pd.DataFrame({
+                "Catégorie": ["Réalisé", "Budget", "N-1"],
+                "Montant": [
+                    df_reel_month["ca"],
+                    df_budget["CA TTC"].sum(),
+                    df_n1["ca_total"].sum(),
+                ]
+            })
 
-# ============================================================================================
-#  📊 — PAGE 3 — ANALYSE ANNUELLE
-# ============================================================================================
-if menu == "📊 Analyse Annuelle":
-    st.header("📊 Analyse Annuelle – Budget / N-1 / Réalisé")
-
-    uploaded_budget = st.file_uploader("Importer Budget 2025", type=["xlsx"])
-    uploaded_n1_year = st.file_uploader("Importer cumulatif N-1 COMPLET", type=["xlsx"])
-    uploaded_realised = st.file_uploader("Importer le CSV cumulé jour-par-jour", type=["csv"])
-
-    if uploaded_budget and uploaded_realised:
-        try:
-            df_budget = load_budget(uploaded_budget)
-            df_n1 = parse_n1_month(uploaded_n1_year) if uploaded_n1_year else None
-            df_real = pd.read_csv(uploaded_realised)
-
-            st.success("✔️ Données chargées")
-
-            st.subheader("Vue Annuelle – CA")
-            st.area_chart(df_real.set_index("Mois")[["CA", "Budget", "N1"]])
-
-        except Exception as e:
-            st.error(f"Erreur : {e}")
-
-
-# ============================================================================================
-#  🕒 — PAGE 4 — HISTORIQUE
-# ============================================================================================
-if menu == "🕒 Historique":
-    st.header("🕒 Historique des Journées Importées")
-
-    uploaded_history = st.file_uploader("Importer l’historique généré (CSV)", type=["csv"])
-
-    if uploaded_history:
-        try:
-            df_hist = pd.read_csv(uploaded_history)
-            st.dataframe(df_hist, use_container_width=True)
+            fig2 = px.bar(
+                compar,
+                x="Catégorie",
+                y="Montant",
+                text_auto=True,
+                color="Catégorie",
+                title="Comparatif Réalisé / Budget / N-1",
+            )
+            st.plotly_chart(fig2, use_container_width=True)
 
         except Exception as e:
-            st.error(f"Erreur : {e}")
+            st.error(f"Erreur dans l'analyse mensuelle : {e}")
 
+
+# -----------------------------------------------------------
+# PAGE 3 — ANALYSE ANNUELLE
+# -----------------------------------------------------------
+else:
+    st.markdown("## 📈 Analyse Annuelle")
+
+    st.info("Cette section sera activée une fois que tu m’auras envoyé tous les fichiers 2025 + Budget + N-1.")
+    st.write("On pourra ensuite générer :")
+    st.write("✔ Tendances de CA TTC")
+    st.write("✔ Projection fin d'année")
+    st.write("✔ Comparatif avec budget cumulatif")
+    st.write("✔ KPI couverts / PM / CA catégorie")
