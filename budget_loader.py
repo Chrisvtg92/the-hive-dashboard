@@ -1,22 +1,12 @@
 import pandas as pd
 
-def load_budget(path, month_name):
-    df = pd.read_excel(path)
-    df.columns = df.columns.str.upper()
+def load_budget(file):
+    df = pd.read_excel(file)
 
-    # Exemple : colonne = "NOVEMBRE"
-    if month_name not in df.columns:
-        return None
+    month_col = [c for c in df.columns if "MOIS" in c.upper()][0]
+    ca_food   = [c for c in df.columns if "NOURRITURE" in c.upper()][0]
+    ca_drink  = [c for c in df.columns if "BOISSON" in c.upper()][0]
 
-    # Ligne contenant "CA TTC TOTAL"
-    mask = df.iloc[:,0].astype(str).str.contains("CA", case=False) & \
-           df.iloc[:,0].astype(str).str.contains("TTC", case=False)
+    df["CA_TOTAL"] = df[ca_food] + df[ca_drink]
 
-    val = df.loc[mask, month_name].values
-    if len(val) == 0:
-        return None
-
-    try:
-        return float(str(val[0]).replace(",","."))
-    except:
-        return None
+    return df[[month_col, ca_food, ca_drink, "CA_TOTAL"]]
