@@ -1,190 +1,209 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-
 from parser_restotrack_daily import parse_daily_report
 from parser_n1 import parse_n1_month
 from budget_loader import load_budget
 
-# -----------------------------------------------------------
-# CONFIGURATION GLOBALE
-# -----------------------------------------------------------
 st.set_page_config(
     page_title="Dashboard – Reporting The Hive",
-    layout="wide",
+    layout="wide"
 )
 
-# -----------------------------------------------------------
-# CHARGEMENT DU CSS THEME
-# -----------------------------------------------------------
-with open("theme.css", "r") as css:
-    st.markdown(f"<style>{css.read()}</style>", unsafe_allow_html=True)
-
-# -----------------------------------------------------------
-# LOGO
-# -----------------------------------------------------------
+# -------------------- LOGO --------------------
 st.image("logo.png", width=180)
-st.markdown("## Dashboard – Reporting The Hive")
+st.markdown("<h1 style='color:#e67e22;'>Dashboard – Reporting The Hive</h1>", unsafe_allow_html=True)
 
-
-# -----------------------------------------------------------
-# MENU LATÉRAL
-# -----------------------------------------------------------
-menu = st.sidebar.radio(
-    "Navigation",
-    ["Rapport Journalier – Import RestoTrack", "Analyse Mensuelle – Budget / N-1 / Réalisé", "Analyse Annuelle"]
+# -------------------- NAVIGATION --------------------
+menu = st.sidebar.selectbox(
+    "📌 Choisir une page",
+    ["Rapport Journalier", "Analyse N-1", "Budget"]
 )
 
+# =====================================================================
+# ======================== PAGE 1 : JOURNALIER ========================
+# =====================================================================
 
-# -----------------------------------------------------------
-# PAGE 1 — RAPPORT JOURNALIER
-# -----------------------------------------------------------
-if menu == "Rapport Journalier – Import RestoTrack":
+if menu == "Rapport Journalier":
+    st.header("📅 Rapport Journalier – Import RestoTrack")
 
-    st.markdown("### 📅 Rapport Journalier – Import RestoTrack")
+    file = st.file_uploader("Importer un fichier Cumulatif_YYYYMMDD.xlsx", type=["xlsx"])
 
-    uploaded = st.file_uploader(
-        "Importer un fichier **Cumulatif_YYYYMMDD.xlsx**",
-        type=["xlsx"],
-        accept_multiple_files=False
-    )
-
-    if uploaded:
+    if file:
         try:
-            data = parse_daily_report(uploaded)
+            df_day = parse_daily_report(file)
 
-            st.success("Fichier traité avec succès ✔")
+            st.success("Fichier chargé avec succès ✔️")
 
-            col1, col2, col3, col4 = st.columns(4)
+            # Affichage
+            st.subheader("Données journalières")
+            st.dataframe(df_day)
 
-            with col1:
-                st.metric("CA Total TTC", f"{data['total_ca']:.2f} €")
+            # Récup
+            total_ca = df_day.loc[df_day["Service"]=="Total","CA_TTC"].values[0]
+            midi_ca  = df_day.loc[df_day["Service"]=="Midi","CA_TTC"].values[0]
+            soir_ca  = df_day.loc[df_day["Service"]=="Soir","CA_TTC"].values[0]
 
-            with col2:
-                st.metric("Total Couverts", data["total_couverts"])
+            total_couverts = df_day["Couverts"].sum()
 
-            with col3:
-                st.metric("CA Midi – Nourriture", f"{data['midi_nourriture']:.2f} €")
+            # KPI
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("CA Total TTC", f"{total_ca:,.2f} €")
+            c2.metric("Couverts Total", int(total_couverts))
+            c3.metric("CA Midi", f"{midi_ca:,.2f} €")
+            c4.metric("CA Soir", f"{soir_ca:,.2f} €")
 
-            with col4:
-                st.metric("CA Soir – Nourriture", f"{data['soir_nourriture']:.2f} €")
+            # Graphiques
+            st.subheader("Répartition du CA")
 
-            col5, col6 = st.columns(2)
-            with col5:
-                st.metric("CA Midi – Boissons", f"{data['midi_boissons']:.2f} €")
-            with col6:
-                st.metric("CA Soir – Boissons", f"{data['soir_boissons']:.2f} €")
-
-            # Graphique composition
-            df_graph = pd.DataFrame({
-                "Service": ["Midi", "Midi", "Soir", "Soir"],
-                "Catégorie": ["Nourriture", "Boissons", "Nourriture", "Boissons"],
-                "CA": [
-                    data["midi_nourriture"],
-                    data["midi_boissons"],
-                    data["soir_nourriture"],
-                    data["soir_boissons"],
-                ]
-            })
-
-            fig = px.bar(
-                df_graph,
-                x="Service",
-                y="CA",
-                color="Catégorie",
-                barmode="group",
-                title="Répartition du CA par service",
-                text_auto=True
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.markdown("### 📄 Détails bruts du fichier")
-            st.dataframe(data["details"], use_container_width=True)
+            st.bar_chart(df_day.set_index("Service")["CA_TTC"])
 
         except Exception as e:
             st.error(f"Erreur lors du traitement : {e}")
+# =====================================================================
+# ======================== PAGE 2 : ANALYSE N-1 ========================
+# =====================================================================
 
+elif menu == "Analyse N-1":
 
-# -----------------------------------------------------------
-# PAGE 2 — ANALYSE MENSUELLE
-# -----------------------------------------------------------
-elif menu == "Analyse Mensuelle – Budget / N-1 / Réalisé":
+    st.header("📊 Analyse N-1 – RestoTrack")
 
-    st.markdown("## 📊 Analyse Mensuelle — Budget / N-1 / Réalisé")
+    file_n1 = st.file_uploader("Importer un fichier N-1 (mois ou année)", type=["xlsx"])
 
+    if file_n1:
+        try:
+            df_n1 = parse_n1_month(file_n1)
+
+            st.success("Fichier N-1 chargé ✔️")
+
+            # Nettoyage
+            df_n1["Date"] = pd.to_datetime(df_n1["Date"])
+            df_n1 = df_n1.sort_values("Date")
+
+            # KPI global
+            total_n1 = df_n1["CA_TTC"].sum()
+
+            st.subheader("📌 Résumé global N-1")
+            k1, k2 = st.columns(2)
+            k1.metric("Total CA TTC N-1", f"{total_n1:,.2f} €")
+            k2.metric("Nombre de jours", df_n1.shape[0])
+
+            st.markdown("---")
+
+            # Tableau
+            st.subheader("Détails par jour")
+            st.dataframe(df_n1, use_container_width=True)
+
+            # Graphique
+            st.subheader("📈 Évolution du CA TTC N-1")
+
+            fig = px.line(
+                df_n1,
+                x="Date",
+                y="CA_TTC",
+                title="CA TTC N-1 par jour",
+                markers=True
+            )
+            fig.update_layout(xaxis_title="", yaxis_title="CA TTC (€)")
+            st.plotly_chart(fig, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Erreur lors du traitement du fichier N-1 : {e}")
+# =====================================================================
+# ======================== PAGE 3 : BUDGET MULTI-ANNÉE =================
+# =====================================================================
+
+elif menu == "Budget":
+
+    st.header("💰 Analyse Budget – Multi-années")
+
+    # Sélection année
+    annee = st.selectbox("Sélectionner l'année", ["2024","2025","2026","2027"])
+    n1_annee = str(int(annee) - 1)
+
+    st.info(f"📌 Analyse pour : {annee} — Comparé à N-1 : {n1_annee}")
+
+    # Uploads
     colA, colB, colC = st.columns(3)
 
     with colA:
-        fichier_n1 = st.file_uploader("Importer fichier N-1 (mois complet)", type=["xlsx"], key="n1")
+        budget_file = st.file_uploader(f"📘 Importer le Budget {annee}", type=["xlsx"], key=f"budget_{annee}")
 
     with colB:
-        fichier_budget = st.file_uploader("Importer Budget Annuel", type=["xlsx"], key="budget")
+        n1_file = st.file_uploader(f"📙 Importer le N-1 ({n1_annee})", type=["xlsx"], key=f"n1_{n1_annee}")
 
     with colC:
-        fichier_resto = st.file_uploader("Importer les fichiers journaliers 2025", type=["xlsx"], accept_multiple_files=True, key="resto")
+        realised_files = st.file_uploader(
+            f"📗 Importer les rapports journaliers {annee} (multiples fichiers)",
+            type=["xlsx"],
+            accept_multiple_files=True,
+            key=f"real_{annee}"
+        )
 
-    if fichier_n1 and fichier_budget and fichier_resto:
+    # Analyse si budget + réalisés présents
+    if budget_file and realised_files:
         try:
-            df_n1 = parse_n1_month(fichier_n1)
-            df_budget = load_budget(fichier_budget)
+            # ----- BUDGET -----
+            df_budget = load_budget(budget_file)
+            total_budget = df_budget["CA_TOTAL"].sum()
 
-            # Agrégation du réalisé 2025
-            df_journalier = []
-            for f in fichier_resto:
-                parsed = parse_daily_report(f)
-                df_journalier.append({
-                    "ca": parsed["total_ca"],
-                    "couverts": parsed["total_couverts"]
-                })
-            df_reel = pd.DataFrame(df_journalier)
-            df_reel_month = df_reel.sum()
+            # ----- N-1 -----
+            if n1_file:
+                df_n1 = parse_n1_month(n1_file)
+                total_n1 = df_n1["CA_TTC"].sum()
+            else:
+                df_n1 = None
+                total_n1 = 0
 
-            # Display section
-            st.success("Tous les fichiers ont été traités ✔")
+            # ----- RÉALISÉ -----
+            realised_values = []
+            for f in realised_files:
+                df_day = parse_daily_report(f)
+                daily_total = df_day[df_day["Service"]=="Total"]["CA_TTC"].values[0]
+                realised_values.append(daily_total)
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("CA Réalisé", f"{df_reel_month['ca']:.2f} €")
-            with col2:
-                st.metric("CA Budget", f"{df_budget['CA TTC'].sum():.2f} €")
-            with col3:
-                st.metric("CA N-1", f"{df_n1['ca_total'].sum():.2f} €")
+            total_realised = sum(realised_values)
+
+            # ---------------- KPI ----------------
+            st.subheader("📌 KPI – Vue d'ensemble")
+
+            k1, k2, k3 = st.columns(3)
+            k1.metric(f"CA Réalisé {annee}", f"{total_realised:,.2f} €")
+            k2.metric(f"CA Budget {annee}", f"{total_budget:,.2f} €")
+            k3.metric(f"CA N-1 ({n1_annee})", f"{total_n1:,.2f} €")
 
             st.markdown("---")
-            st.markdown("### Comparatif Graphique")
 
-            compar = pd.DataFrame({
-                "Catégorie": ["Réalisé", "Budget", "N-1"],
-                "Montant": [
-                    df_reel_month["ca"],
-                    df_budget["CA TTC"].sum(),
-                    df_n1["ca_total"].sum(),
-                ]
+            # ---------------- Comparatif Global ----------------
+            st.subheader("📊 Comparatif Global")
+
+            comp = pd.DataFrame({
+                "Catégorie": [f"Réalisé {annee}", f"Budget {annee}", f"N-1 {n1_annee}"],
+                "Montant": [total_realised, total_budget, total_n1]
             })
 
-            fig2 = px.bar(
-                compar,
-                x="Catégorie",
-                y="Montant",
-                text_auto=True,
-                color="Catégorie",
-                title="Comparatif Réalisé / Budget / N-1",
+            fig = px.bar(
+                comp, x="Catégorie", y="Montant", text_auto=True,
+                color="Catégorie", title="Comparatif Réalisé / Budget / N-1"
             )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("---")
+
+            # ---------------- Évolution journalière ----------------
+            st.subheader(f"📈 Évolution journalière {annee}")
+
+            df_jour = pd.DataFrame({
+                "Jour": list(range(1, len(realised_values) + 1)),
+                "CA Réalisé": realised_values
+            })
+
+            fig2 = px.line(
+                df_jour, x="Jour", y="CA Réalisé",
+                markers=True, title=f"CA Réalisé – Jour par Jour ({annee})"
+            )
+
             st.plotly_chart(fig2, use_container_width=True)
 
         except Exception as e:
-            st.error(f"Erreur dans l'analyse mensuelle : {e}")
-
-
-# -----------------------------------------------------------
-# PAGE 3 — ANALYSE ANNUELLE
-# -----------------------------------------------------------
-else:
-    st.markdown("## 📈 Analyse Annuelle")
-
-    st.info("Cette section sera activée une fois que tu m’auras envoyé tous les fichiers 2025 + Budget + N-1.")
-    st.write("On pourra ensuite générer :")
-    st.write("✔ Tendances de CA TTC")
-    st.write("✔ Projection fin d'année")
-    st.write("✔ Comparatif avec budget cumulatif")
-    st.write("✔ KPI couverts / PM / CA catégorie")
+            st.error(f"Erreur dans l'analyse du Budget : {e}")
