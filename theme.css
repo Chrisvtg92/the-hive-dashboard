@@ -1,27 +1,17 @@
-/* THE HIVE PREMIUM THEME */
-
 body {
-    background: #fafafa !important;
+    background-color: #f5f6fa;
+    font-family: 'Inter', sans-serif;
 }
 
-.block-container {
-    padding-top: 2rem;
-}
-
-h1, h2, h3, h4 {
+h1, h2, h3 {
+    color: #0a3d62;
     font-weight: 700;
-    color: #E37B22 !important; /* Orange The Hive */
 }
 
-.kpi-card {
+.block {
     padding: 20px;
     background: white;
-    border-radius: 14px;
-    box-shadow: 0px 4px 15px rgba(0,0,0,0.08);
-    margin-bottom: 10px;
-}
-
-.big-kpi {
-    font-size: 32px;
-    font-weight: 800;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+    margin-bottom: 20px;
 }
